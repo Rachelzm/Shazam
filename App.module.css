@@ -1,0 +1,29 @@
+:root{
+  --bg:#0f0f14;
+  --panel:#121217;
+  --accent:#6c63ff;
+  --muted:#9aa0b4;
+}
+
+.app{
+  min-height:100vh;
+  background:linear-gradient(180deg,var(--bg),#0b0b0f);
+  color: #e6eef8;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+}
+
+.header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:20px;
+}
+
+.logo{display:flex;align-items:center;gap:12px}
+.logoText{font-weight:700}
+
+.main{padding:24px}
+
+.recordBtn{background:var(--accent);border-radius:999px;padding:18px;border:none}
+
+.errorBanner{background:#3b1f1f;padding:10px;border-radius:8px;display:flex;gap:8px;align-items:center}
