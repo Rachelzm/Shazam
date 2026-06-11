@@ -216,54 +216,100 @@ function useAudioRecorder() {
 }
 
 // ── useHistory ────────────────────────────────────────────────
-function useHistory() {
-  const load = () => { try { return JSON.parse(localStorage.getItem('soundsnap_history') || '[]'); } catch { return []; } };
-  const [history, setHistory] = useState(load);
-  const addEntry = useCallback((song) => {
-    setHistory(prev => {
-      const entry = { ...song, recognizedAt: new Date().toISOString(), id: Date.now() };
-      const updated = [entry, ...prev].slice(0, 20);
-      localStorage.setItem('soundsnap_history', JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
-  const clearHistory = useCallback(() => { localStorage.removeItem('soundsnap_history'); setHistory([]); }, []);
+function useHistory(authToken) {
+  const loadLocal = () => { try { return JSON.parse(localStorage.getItem('soundsnap_history') || '[]'); } catch { return []; } };
+  const [history, setHistory] = useState([]);
+
+  useEffect(() => {
+    if (authToken) {
+      fetch('http://localhost:3001/api/history', {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      })
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setHistory(data))
+      .catch(err => console.error('History ophalen mislukt:', err));
+    } else {
+      setHistory(loadLocal());
+    }
+  }, [authToken]);
+
+  const addEntry = useCallback(async (song) => {
+    if (authToken) {
+      try {
+        const res = await fetch('http://localhost:3001/api/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+          body: JSON.stringify({ song })
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          setHistory(prev => [saved, ...prev].slice(0, 20));
+        }
+      } catch (err) { console.error('Fout bij opslaan geschiedenis:', err); }
+    } else {
+      setHistory(prev => {
+        const entry = { ...song, recognizedAt: new Date().toISOString(), id: Date.now() };
+        const updated = [entry, ...prev].slice(0, 20);
+        localStorage.setItem('soundsnap_history', JSON.stringify(updated));
+        return updated;
+      });
+    }
+  }, [authToken]);
+
+  const clearHistory = useCallback(async () => {
+    if (authToken) {
+      try {
+        await fetch('http://localhost:3001/api/history', {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        setHistory([]);
+      } catch (err) { console.error('Fout bij wissen geschiedenis:', err); }
+    } else {
+      localStorage.removeItem('soundsnap_history');
+      setHistory([]);
+    }
+  }, [authToken]);
+
   return { history, addEntry, clearHistory };
 }
 
 // ── recognizeSong ─────────────────────────────────────────────
-async function recognizeSong(audioBlob) {
+async function recognizeSong(audioBlob, apiToken) {
   const form = new FormData()
+  form.append('api_token', apiToken || '')
   form.append('file', audioBlob, 'recording.webm')
 
-  const resp = await fetch('http://localhost:3000/api/recognize', { method: 'POST', body: form })
+  const resp = await fetch('http://localhost:3001/api/recognize', { method: 'POST', body: form })
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
     throw new Error(`Proxy error: ${resp.status} ${resp.statusText} ${text}`)
   }
 
   const json = await resp.json()
-  console.debug('ACR response', json)
+  console.debug('AudD response', json)
+
+  // Als de AudD API een foutmelding teruggeeft, gooi dan direct een Error
+  if (json && json.status === 'error') {
+    const errMsg = (json.error && (json.error.error_message || json.error.message || json.error.error)) || JSON.stringify(json.error);
+    throw new Error(`AudD API Fout: ${errMsg}`);
+  }
 
   // Return both parsed primary result and raw JSON so callers can debug
   const parsed = (function parse(json) {
-    if (!json || !json.status) return null
-    if (json.status.code !== 0) return null
-    // ACRCloud may return matches under metadata.music or metadata.humming
-    const candidates = (json.metadata && (json.metadata.music || json.metadata.humming)) || []
-    const m = candidates[0]
-    if (!m) return null
+    if (!json || json.status !== 'success' || !json.result) return null
+    const r = json.result;
     return {
-      title: m.title || (m.external_metadata && m.external_metadata.spotify && m.external_metadata.spotify.track && m.external_metadata.spotify.track.name) || null,
-      artist: (m.artists && m.artists[0] && m.artists[0].name) || (m.external_metadata && m.external_metadata.spotify && m.external_metadata.spotify.track && m.external_metadata.spotify.track.artists && m.external_metadata.spotify.track.artists[0] && m.external_metadata.spotify.track.artists[0].name) || null,
-      album: m.album && m.album.name || null,
-      releaseDate: m.release_date || null,
-      timecode: m.play_offset_ms || null,
-      label: m.label || null,
-      spotifyUrl: m.external_metadata && m.external_metadata.spotify && m.external_metadata.spotify.track && m.external_metadata.spotify.track.track_url || null,
+      title: r.title || 'Onbekend nummer',
+      artist: r.artist || 'Onbekende artiest',
+      album: r.album || null,
+      releaseDate: r.release_date || null,
+      timecode: r.timecode || null,
+      label: r.label || null,
+      spotifyUrl: r.spotify && r.spotify.external_urls && r.spotify.external_urls.spotify || null,
       spotifyPreview: null,
-      appleUrl: m.external_metadata && m.external_metadata.apple_music && m.external_metadata.apple_music[0] && m.external_metadata.apple_music[0].url || null,
-      artwork: m.acr && m.acr ? (m.acr.image || null) : (m.spotify && m.spotify.album && m.spotify.album.images && m.spotify.album.images[0] && m.spotify.album.images[0].url) || null,
+      appleUrl: r.apple_music && r.apple_music.url || null,
+      artwork: (r.apple_music && r.apple_music.artwork && r.apple_music.artwork.url) ? r.apple_music.artwork.url.replace('{w}', '400').replace('{h}', '400') : (r.spotify && r.spotify.album && r.spotify.album.images && r.spotify.album.images[0] && r.spotify.album.images[0].url) || null,
     }
   })(json)
 
@@ -328,6 +374,164 @@ function HistoryPanel({ history, onSelect, onClear, onClose }) {
             </button>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── useAuth ───────────────────────────────────────────────────
+function useAuth() {
+  const [token, setToken] = useState(() => localStorage.getItem('soundsnap_token') || null);
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('soundsnap_user')); } catch { return null; }
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const authenticate = async (endpoint, email, password) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`http://localhost:3001/api/auth/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Authenticatie mislukt');
+      
+      setToken(data.token);
+      setUser(data.user);
+      localStorage.setItem('soundsnap_token', data.token);
+      localStorage.setItem('soundsnap_user', JSON.stringify(data.user));
+      return data;
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const login = (email, password) => authenticate('login', email, password);
+  const register = (email, password) => authenticate('register', email, password);
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem('soundsnap_token');
+    localStorage.removeItem('soundsnap_user');
+  };
+
+  return { token, user, loading, error, login, register, logout, isAuthenticated: !!token };
+}
+
+// ── AuthPanel ─────────────────────────────────────────────────
+function AuthPanel({ onLogin, onRegister, onLogout, onClose, user, loading, error, history, onClearHistory }) {
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [localError, setLocalError] = useState(null);
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setLocalError(null);
+    try {
+      if (mode === 'login') {
+        await onLogin(email, password);
+      } else {
+        await onRegister(email, password);
+      }
+      if (onClose) onClose();
+    } catch (submitError) {
+      setLocalError(submitError.message || 'Authenticatie mislukt');
+    }
+  };
+
+  const message = localError || error;
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ padding: '28px', maxWidth: '460px' }}>
+        <div className="modal-header" style={{ padding: 0, border: 'none', marginBottom: '18px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ width: 44, height: 44, borderRadius: 14, display: 'grid', placeItems: 'center', background: 'linear-gradient(135deg, #6c63ff, #22c55e)' }}>
+              <span style={{ fontWeight: 800, fontSize: 18, color: '#fff' }}>♪</span>
+            </div>
+            <div>
+              <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em' }}>SoundSnap</div>
+              <div style={{ color: '#9aa0b4', fontSize: '0.85rem' }}>Log in of maak een account aan</div>
+            </div>
+          </div>
+          {onClose && (
+            <button type="button" onClick={onClose} style={{ background: 'transparent', color: '#c8d0e0', fontSize: 22, border: 'none', cursor: 'pointer' }}>✕</button>
+          )}
+        </div>
+
+        {user && onLogout && (
+          <>
+            <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 13, color: '#9aa0b4' }}>Ingelogd als</div>
+                <div style={{ fontWeight: 700 }}>{user.email}</div>
+              </div>
+              <button type="button" onClick={() => { onLogout(); if (onClose) onClose(); }} style={{ padding: '10px 14px', border: 'none', borderRadius: 12, background: '#ef4444', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Uitloggen</button>
+            </div>
+            
+            <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Mijn Database Geschiedenis</h3>
+                {history && history.length > 0 && (
+                  <button type="button" onClick={() => { if(window.confirm('Weet je zeker dat je alle nummers uit je database wilt wissen?')) { onClearHistory(); } }} style={{ background: 'transparent', border: 'none', color: '#f87171', fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>Alles wissen</button>
+                )}
+              </div>
+              
+              {history && history.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '200px', overflowY: 'auto' }}>
+                  {history.map(item => (
+                    <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, background: 'rgba(255,255,255,0.04)', borderRadius: 8 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 6, background: '#1c1c28', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+                        {item.artwork ? <img src={item.artwork} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="" /> : <span style={{ fontSize: 14 }}>♪</span>}
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.title}</span>
+                        <span style={{ fontSize: 11, color: '#9aa0b4', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.artist}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: '#7a7a99', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>Je account heeft nog geen nummers herkend.</div>
+              )}
+            </div>
+          </>
+        )}
+
+        {!user && (
+          <>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 18, padding: 4, background: 'rgba(255,255,255,0.04)', borderRadius: 14 }}>
+              <button type="button" onClick={() => setMode('login')} style={{ flex: 1, padding: '10px 14px', border: 'none', borderRadius: 10, background: mode === 'login' ? '#6c63ff' : 'transparent', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Login</button>
+              <button type="button" onClick={() => setMode('register')} style={{ flex: 1, padding: '10px 14px', border: 'none', borderRadius: 10, background: mode === 'register' ? '#6c63ff' : 'transparent', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Register</button>
+            </div>
+
+            <form onSubmit={handleSubmit}>
+              <label style={{ display: 'block', marginBottom: 12 }}>
+                <div style={{ marginBottom: 6, color: '#c8d0e0', fontSize: '0.85rem' }}>E-mail</div>
+                <input className="modal-input" value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
+              </label>
+
+              <label style={{ display: 'block', marginBottom: 16 }}>
+                <div style={{ marginBottom: 6, color: '#c8d0e0', fontSize: '0.85rem' }}>Wachtwoord</div>
+                <input className="modal-input" value={password} onChange={(e) => setPassword(e.target.value)} type="password" required minLength={6} />
+              </label>
+
+              {message && <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 12, background: 'rgba(239,68,68,0.12)', color: '#fecaca', fontSize: '0.85rem' }}>{message}</div>}
+
+              <button type="submit" disabled={loading} style={{ width: '100%', padding: '12px 16px', border: 'none', borderRadius: 12, background: 'linear-gradient(135deg, #6c63ff, #5148ff)', color: '#fff', fontWeight: 800, cursor: 'pointer', opacity: loading ? 0.7 : 1 }}>
+                {loading ? 'Bezig…' : mode === 'login' ? 'Inloggen' : 'Account maken'}
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );
@@ -413,20 +617,41 @@ function SongResult({ result, onReset }) {
 // ── App ───────────────────────────────────────────────────────
 const RECORD_DURATION = 8000;
 
+function IconHistory() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="12 8 12 12 14 14"/>
+      <path d="M3.05 11a9 9 0 1 0 .5-4.5"/>
+      <polyline points="3 3 3 7 7 7"/>
+    </svg>
+  )
+}
+
+function IconAccount() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 21a8 8 0 10-16 0" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  )
+}
+
 function App() {
+  const { token, user, loading: authLoading, error: authError, login, register, logout } = useAuth();
   const [appState, setAppState] = useState('idle');
   const [result, setResult] = useState(null);
   const [apiError, setApiError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [apiToken, setApiToken] = useState(() => localStorage.getItem('shazam_token') || '');
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [apiToken, setApiToken] = useState(() => localStorage.getItem('shazam_token') || 'test');
   const [rawResponse, setRawResponse] = useState(null);
   const [showDebug, setShowDebug] = useState(false);
   const [countdown, setCountdown] = useState(null);
   const [progress, setProgress] = useState(0);
 
   const { isRecording, audioBlob, error: recError, audioLevel, startRecording, stopRecording } = useAudioRecorder();
-  const { history, addEntry, clearHistory } = useHistory();
+  const { history, addEntry, clearHistory } = useHistory(token);
 
   useEffect(() => {
     if (isRecording) {
@@ -483,10 +708,14 @@ function App() {
           <span className="logo-text">SoundSnap</span>
         </div>
         <div className="header-actions">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {user && <span style={{color:'#9aa0b4', fontSize:14}}>{user.email}</span>}
+            <button className="icon-btn" onClick={() => setShowAuthPanel(true)} title="Account">
+              <IconAccount />
+            </button>
+          </div>
           <button className="icon-btn" onClick={() => setShowHistory(true)} title="Geschiedenis">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="12 8 12 12 14 14"/><path d="M3.05 11a9 9 0 1 0 .5-4.5"/><polyline points="3 3 3 7 7 7"/>
-            </svg>
+            <IconHistory />
             {history.length > 0 && <span className="badge">{history.length}</span>}
           </button>
           <button className="icon-btn" onClick={() => setShowSettings(true)} title="Instellingen">
@@ -568,23 +797,20 @@ function App() {
         )}
         {showDebug && (
           <div style={{padding:'1rem', background:'#0b0b10', borderTop:'1px solid #222', color:'#cbd5ff', maxHeight: '40vh', overflow: 'auto'}}>
-            <h3 style={{marginBottom:6}}>Debug — full ACR response</h3>
+            <h3 style={{marginBottom:6}}>Debug — full AudD response</h3>
             {!rawResponse ? (
               <div style={{color:'#9aa0c7'}}>No raw response captured yet. Perform a recognition to populate this view.</div>
             ) : (
               <div>
                 <pre style={{whiteSpace:'pre-wrap', fontSize:'12px', lineHeight:1.35}}>{JSON.stringify(rawResponse, null, 2)}</pre>
-                {(rawResponse.metadata && (rawResponse.metadata.music || rawResponse.metadata.humming)) && (
+                {rawResponse.result && (
                   <div style={{marginTop:12}}>
-                    <h4 style={{marginBottom:6}}>Candidates</h4>
-                    {(rawResponse.metadata.music || rawResponse.metadata.humming).map((m, i) => (
-                      <div key={i} style={{padding:'8px', border:'1px solid #222', borderRadius:8, marginBottom:8}}>
-                        <div style={{fontWeight:700}}>{m.title || m.external_metadata?.spotify?.track?.name || '—'}</div>
-                        <div style={{color:'#9aa0c7'}}>{(m.artists && m.artists.map(a=>a.name).join(', ')) || (m.external_metadata && m.external_metadata.spotify && m.external_metadata.spotify.track && (m.external_metadata.spotify.track.artists || []).map(a=>a.name).join(', ')) || 'Unknown artist'}</div>
-                        <div style={{color:'#7a7a99', fontSize:12}}>{m.album && m.album.name ? `Album: ${m.album.name}` : ''} {m.release_date ? ` • Released: ${m.release_date}` : ''} {m.score ? ` • score: ${m.score}` : ''}</div>
-                        <pre style={{whiteSpace:'pre-wrap', fontSize:11, marginTop:6}}>{JSON.stringify(m, null, 2)}</pre>
-                      </div>
-                    ))}
+                    <h4 style={{marginBottom:6}}>Result</h4>
+                    <div style={{padding:'8px', border:'1px solid #222', borderRadius:8, marginBottom:8}}>
+                      <div style={{fontWeight:700}}>{rawResponse.result.title || '—'}</div>
+                      <div style={{color:'#9aa0c7'}}>{rawResponse.result.artist || 'Unknown artist'}</div>
+                      <div style={{color:'#7a7a99', fontSize:12}}>{rawResponse.result.album ? `Album: ${rawResponse.result.album}` : ''} {rawResponse.result.release_date ? ` • Released: ${rawResponse.result.release_date}` : ''}</div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -597,6 +823,7 @@ function App() {
 
       {showSettings && <Settings token={apiToken} onSave={handleSaveToken} onClose={() => setShowSettings(false)} />}
       {showHistory && <HistoryPanel history={history} onSelect={handleSelectHistory} onClear={clearHistory} onClose={() => setShowHistory(false)} />}
+      {showAuthPanel && <AuthPanel user={user} onLogin={login} onRegister={register} onLogout={logout} loading={authLoading} error={authError} history={history} onClearHistory={clearHistory} onClose={() => setShowAuthPanel(false)} />}
     </div>
   );
 }

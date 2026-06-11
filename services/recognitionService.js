@@ -1,22 +1,20 @@
-// WARNING: This file includes a user-provided API key. Embedding secrets in source
-// is insecure — consider using environment variables or browser prompt to set the token.
-const EMBEDDED_API_TOKEN = '17coJ8CSAYn2kconfoJPg5nXAJpZicIMoPJBuz3ZpecGksVmiV9w29yETy6GFuDh'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
 export async function recognizeSong(blob, token) {
-  const apiToken = token && token !== 'test' ? token : EMBEDDED_API_TOKEN
-
   try {
     if (!blob || typeof blob.size === 'number' && blob.size === 0) {
       console.warn('recognizeSong: empty audio blob, nothing to send')
       return null
     }
     const form = new FormData()
-    form.append('api_token', apiToken)
-    // AudD accepts a file field named `file` for uploads
+    if (token && token !== 'test') {
+      form.append('api_token', token)
+    }
+    // The local server forwards this to the recognition provider.
     form.append('file', blob, 'recording.webm')
     form.append('return', 'timecode,apple_music')
 
-    const resp = await fetch('https://api.audd.io/', {
+    const resp = await fetch(`${API_BASE_URL}/recognize`, {
       method: 'POST',
       body: form,
     })

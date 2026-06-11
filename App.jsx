@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import { useHistory } from './hooks/useHistory'
+import { useAuth } from './hooks/useAuth'
 import { recognizeSong } from './services/recognitionService'
 import { WaveVisualizer } from './components/WaveVisualizer'
 import { SongResult } from './components/SongResult'
 import { Settings } from './components/Settings'
 import { HistoryPanel } from './components/HistoryPanel'
+import { AuthPanel } from './components/AuthPanel'
 import styles from './App.module.css'
 
 const RECORD_DURATION = 8000
@@ -29,6 +31,15 @@ function IconHistory() {
   )
 }
 
+function IconAccount() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 21a8 8 0 10-16 0" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  )
+}
+
 function IconMic() {
   return (
     <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor">
@@ -38,17 +49,22 @@ function IconMic() {
 }
 
 export default function App() {
+  const { token: authToken, user, loading, login, register, logout, isAuthenticated } = useAuth()
+  // DEV HMR badge to confirm live reload
+  const [devBadgeToggle, setDevBadgeToggle] = useState(false)
+  useEffect(() => { const t = setInterval(() => setDevBadgeToggle((s) => !s), 1000); return () => clearInterval(t) }, [])
   const [appState, setAppState] = useState('idle')
   const [result, setResult] = useState(null)
   const [apiError, setApiError] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [showAuthPanel, setShowAuthPanel] = useState(false)
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('audd_token') || 'test')
   const [countdown, setCountdown] = useState(null)
   const [progress, setProgress] = useState(0)
 
   const { isRecording, audioBlob, error: recError, audioLevel, startRecording, stopRecording } = useAudioRecorder()
-  const { history, addEntry, clearHistory } = useHistory()
+  const { history, addEntry, clearHistory } = useHistory(authToken)
 
   useEffect(() => {
     if (isRecording) {
@@ -114,6 +130,18 @@ export default function App() {
 
   const displayError = recError || apiError
 
+  if (loading) {
+    return (
+      <div className={styles.app} style={{display:'grid',placeItems:'center',minHeight:'100vh'}}>
+        <div style={{color:'#e6eef8'}}>Session laden…</div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <AuthPanel onLogin={login} onRegister={register} loading={loading} />
+  }
+
   return (
     <div className={styles.app}>
       <div className={styles.orb1} />
@@ -131,6 +159,11 @@ export default function App() {
           <span className={styles.logoText}>SoundSnap</span>
         </div>
         <div className={styles.headerActions}>
+          <button className={styles.iconBtn} onClick={() => setShowAuthPanel(true)} title="Login / Account" style={{display:'inline-flex',alignItems:'center',gap:8,padding:'10px 14px',width:'auto'}}>
+            <IconAccount />
+            <span style={{fontSize:14,fontWeight:700}}>Account</span>
+          </button>
+          {user?.email && <span style={{color:'#9aa0b4',fontSize:14}}>{user.email}</span>}
           <button className={styles.iconBtn} onClick={() => setShowHistory(true)} title="Geschiedenis">
             <IconHistory />
             {history.length > 0 && <span className={styles.badge}>{history.length}</span>}
@@ -222,6 +255,15 @@ export default function App() {
           onSelect={handleSelectHistory}
           onClear={clearHistory}
           onClose={() => setShowHistory(false)}
+        />
+      )}
+      {showAuthPanel && (
+        <AuthPanel
+          user={user}
+          onLogin={login}
+          onRegister={register}
+          onLogout={logout}
+          onClose={() => setShowAuthPanel(false)}
         />
       )}
     </div>

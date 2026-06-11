@@ -19,6 +19,7 @@ Een Shazam-achtige webapplicatie gebouwd met **React + Vite** als onderdeel van 
 | Build tool | Vite 5 |
 | Audio API | Web MediaRecorder API |
 | Herkenning | AudD.io REST API |
+| Geschiedenis | Express + SQLite |
 | Styling | CSS Modules |
 
 ## Installatie
@@ -36,6 +37,18 @@ npm run dev
 ```
 
 De app draait dan op `http://localhost:5173`
+
+## Server starten
+
+De recente nummers worden opgeslagen via de Express server in `server/` en bewaard in een SQLite-database op `server/soundsnap.db`.
+
+```bash
+cd server
+npm install
+npm start
+```
+
+De API draait dan op `http://localhost:3000`
 
 ## API Token instellen
 
